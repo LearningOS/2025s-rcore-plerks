@@ -23,6 +23,9 @@ pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
 
+/// 系统调用号的最大值
+const MX_SYSCALL: usize = 474;
+
 /// The task manager, where all the tasks are managed.
 ///
 /// Functions implemented on `TaskManager` deals with all task state transitions
@@ -37,6 +40,10 @@ pub struct TaskManager {
     num_app: usize,
     /// use inner value to get mutable access
     inner: UPSafeCell<TaskManagerInner>,
+    /// 记录用户程序各系统调用的调用次数
+    /// 直接写pub syscall_counter: [[usize; MX_SYSCALL]; MAX_APP_NUM]不行
+    /// 得仿照inner用UPSafeCell包一层，不然由于TASK_MANAGER是全局静态变量，rust里全局静态变量不可变
+    syscall_counter_cell: UPSafeCell<[[usize; MX_SYSCALL]; MAX_APP_NUM]>,
 }
 
 /// Inner of Task Manager
@@ -67,6 +74,9 @@ lazy_static! {
                     current_task: 0,
                 })
             },
+            syscall_counter_cell: unsafe {
+                UPSafeCell::new([[0; MX_SYSCALL]; MAX_APP_NUM])
+            }
         }
     };
 }
@@ -135,6 +145,22 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// 把当前任务的syscall_id的系统调用次数记录增加1
+    pub fn inc_syscall_count(&self, syscall_id: usize) {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let mut syscall_counter = self.syscall_counter_cell.exclusive_access();
+        syscall_counter[current][syscall_id] += 1;
+    }
+
+    /// 获取当前任务的syscall_id的系统调用次数
+    pub fn get_syscall_count(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let syscall_counter = self.syscall_counter_cell.exclusive_access();
+        syscall_counter[current][syscall_id]
+    }
 }
 
 /// Run the first task in task list.
@@ -168,4 +194,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// 调TASK_MANAGER.inc_syscall_count()
+pub fn add_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.inc_syscall_count(syscall_id);
+}
+
+/// 调TASK_MANAGER.get_syscall_count()
+pub fn get_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.get_syscall_count(syscall_id);
 }
