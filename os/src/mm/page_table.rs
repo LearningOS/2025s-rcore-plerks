@@ -116,7 +116,7 @@ impl PageTable {
         result
     }
     /// Find PageTableEntry by VirtPageNum
-    fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+    pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
         let idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
         let mut result: Option<&mut PageTableEntry> = None;
@@ -155,9 +155,14 @@ impl PageTable {
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
     }
+
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
+/// <https://rcore-os.cn/rCore-Tutorial-Book-v3/chapter4/6multitasking-based-on-as.html#sys-write>
+/// 给出用户空间的token，开始地址，和长度，实现将应用地址空间中一个缓冲区转化为在内核空间中能够直接访问
+/// 对应的数据内容跨页也没问题
+/// token相当于某个用户进程该有的satp寄存器的值，里面有根页目录的地址，可以用来查页表
 pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
     let page_table = PageTable::from_token(token);
     let mut start = ptr as usize;
@@ -168,8 +173,8 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         let mut vpn = start_va.floor();
         let ppn = page_table.translate(vpn).unwrap().ppn();
         vpn.step();
-        let mut end_va: VirtAddr = vpn.into();
-        end_va = end_va.min(VirtAddr::from(end));
+        let mut end_va: VirtAddr = vpn.into(); // end_va为这一页的结束地址
+        end_va = end_va.min(VirtAddr::from(end)); // end_va = min(end, 这一页的结束地址)
         if end_va.page_offset() == 0 {
             v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
         } else {
@@ -177,5 +182,5 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         }
         start = end_va.into();
     }
-    v
+    v // v里放的相当于指针，指针值为物理地址。translated_byte_buffer的返回结果为一个个页内切片，Vec[i]为在单个页中的一个u8切片。u8不会跨页。
 }

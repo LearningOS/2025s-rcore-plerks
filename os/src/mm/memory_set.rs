@@ -35,6 +35,8 @@ lazy_static! {
 }
 /// address space
 pub struct MemorySet {
+    /// https://rcore-os.cn/rCore-Tutorial-Book-v3/chapter4/5kernel-app-spaces.html#term-vm-memory-set
+    /// PageTable 下挂着所有多级页表的节点所在的物理页帧，而每个 MapArea 下则挂着对应逻辑段中的数据所在的物理页帧，这两部分合在一起构成了一个地址空间所需的所有物理页帧。
     page_table: PageTable,
     areas: Vec<MapArea>,
 }
@@ -63,6 +65,19 @@ impl MemorySet {
             None,
         );
     }
+
+    /// 使用MapArea的unmap()完成功能
+    /// 如果[start_vpn, end_vpn)不能恰好对上某个MapArea，返回Err
+    pub fn munmap(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> Result<(), ()> {
+        for area in self.areas.iter_mut() {
+            if area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn {
+                area.unmap(&mut self.page_table);
+                return Ok(());
+            }
+        }
+        Err(())
+    }
+
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
@@ -71,6 +86,15 @@ impl MemorySet {
         self.areas.push(map_area);
     }
     /// Mention that trampoline is not collected by areas.
+    /// trampoline这个符号在trap.S中定义，和__alltraps地址相同。trampoline这个页包含__alltraps和__restore函数，
+    /// 这里做的事是把trap.S的代码映射到用户空间最高地址的那个页面中，
+    /// 且在linker.ld中：
+    /// . = ALIGN(4K);
+    /// strampoline = .;
+    /// *(.text.trampoline);
+    /// . = ALIGN(4K);
+    /// 将它对齐到了代码段的一个页面中，然后这里直接调函数将其映射到最高页
+    /// 注意后面.text段映射时没有包含trampoline，trampoline没被映射多次
     fn map_trampoline(&mut self) {
         self.page_table.map(
             VirtAddr::from(TRAMPOLINE).into(),
@@ -206,6 +230,7 @@ impl MemorySet {
             None,
         );
         // map TrapContext
+        // 给 TrapContext 分配物理页面，位置在 [TRAP_CONTEXT_BASE, TRAMPOLINE)，即次高页。trap时会把TrapContext保存在用户空间次高页
         memory_set.push(
             MapArea::new(
                 TRAP_CONTEXT_BASE.into(),
@@ -261,6 +286,11 @@ impl MemorySet {
         } else {
             false
         }
+    }
+
+    /// 用page_table的find_pte直接返回pte的拷贝
+    pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+        self.page_table.find_pte(vpn)
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory

@@ -39,6 +39,12 @@ __alltraps:
     ld sp, 35*8(sp)
     # switch to kernel space
     csrw satp, t0
+    # 这时候才从用户页表切换到内核的页表，__alltraps函数前面虽然是内核态，但是还是用的用户的页表，但是我们想执行的是内核的代码，
+    # 所以要有trampoline跳板，把这部分内核代码映射到用户空间，取下一条指令时可以通过用户页表访问到内核代码。
+    # 用户态能不能读到这个跳板页面？
+    # 可以，不然怎么取指呢。但是不能写，没有写的权限：os/src/mm/memory_set.rs map_trampoline()时权限是 PTEFlags::R | PTEFlags::X
+    # 为什么不一开始就切换页表？
+    # 设计成TrapContext保存在了用户地址空间的次高页面，还不能直接切到内核页表
     sfence.vma
     # jump to trap_handler
     jr t1
@@ -46,7 +52,7 @@ __alltraps:
 __restore:
     # a0: *TrapContext in user space(Constant); a1: user space token
     # switch to user space
-    csrw satp, a1
+    csrw satp, a1 # 切换到了用户空间，以读取 TrapContext 恢复用户态上下文
     sfence.vma
     csrw sscratch, a0
     mv sp, a0

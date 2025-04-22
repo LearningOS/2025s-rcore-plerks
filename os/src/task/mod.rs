@@ -15,8 +15,10 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, PageTableEntry, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
@@ -46,6 +48,7 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+    syscall_counter: BTreeMap<usize, BTreeMap<usize, u32>>, // (taskid, (syscall_id, 调用次数))
 }
 
 lazy_static! {
@@ -64,6 +67,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    syscall_counter: BTreeMap::new()
                 })
             },
         }
@@ -152,6 +156,86 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// 把当前任务的syscall_id的系统调用次数记录增加1
+    pub fn inc_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        *inner.syscall_counter.entry(current)
+                            .or_insert_with(BTreeMap::new)
+                            .entry(syscall_id)
+                            .or_insert(0) += 1;
+
+    }
+
+    /// 获取当前任务的syscall_id的系统调用次数
+    pub fn get_syscall_count(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let value = inner.syscall_counter
+                    .get(&current)
+                    .and_then(|inner| inner.get(&syscall_id))
+                    .copied()
+                    .unwrap_or(0);
+        return value as usize;
+    }
+
+    /// 用page_table的find_pte直接返回pte的拷贝
+    pub fn find_pte_by_virtual_address(&self, address: usize) -> Option<PageTableEntry> {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        // debug!("address: {}", address);
+        let va = VirtAddr::from(address); // VirtAddr::from会把高位变成0
+        // debug!("va: {}", va.0);
+        let vpn = va.floor(); // 不能直接用VirtPageNum::from(va)，VirtPageNum::from()要求地址已经是页对齐(里面会assert)
+        let pte = inner.tasks[current].memory_set.find_pte(vpn);
+        if let Some(x) = pte {
+            return Some(x.clone());
+        }
+        else {
+            return None;
+        }
+    }
+
+    /// 用page_table的find_pte直接返回pte的拷贝，参数为VirtPageNum
+    pub fn find_pte(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let pte = inner.tasks[current].memory_set.find_pte(vpn);
+        if let Some(x) = pte {
+            return Some(x.clone());
+        }
+        else {
+            return None;
+        }
+    }
+
+    /// 根据va，用MemorySet的insert_framed_area()实现分配
+    pub fn mmap(&self, start_va: VirtAddr, end_va: VirtAddr, prot: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        
+        // 构造MapPermission，第 0 位表示是否可读，第 1 位表示是否可写，第 2 位表示是否可执行
+        let mut map_perm = MapPermission::U;
+        if prot & 1 == 1 {
+            map_perm |= MapPermission::R;
+        }
+        if prot & 2 == 2 {
+            map_perm |= MapPermission::W;
+        }
+        if prot & 4 == 4 {
+            map_perm |= MapPermission::X;
+        }
+
+        inner.tasks[current].memory_set.insert_framed_area(start_va, end_va, map_perm);
+    }
+
+    /// 调用MemorySet的munmap()完成释放
+    pub fn munmap(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> Result<(), ()> {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.munmap(start_vpn, end_vpn)
     }
 }
 
