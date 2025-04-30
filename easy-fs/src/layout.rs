@@ -4,7 +4,9 @@ use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter, Result};
 
 const EFS_MAGIC: u32 = 0x3b800001;
-const INODE_DIRECT_COUNT: usize = 28;
+/// The max number of direct inodes
+const INODE_DIRECT_COUNT: usize = 28 - 1; // 实现ch6的硬链接，需要增加引用计数字段，为了让DiskInode的大小不变，减小一下INODE_DIRECT_COUNT，保持每个块正好能够容纳4个DiskInode
+/// The max length of inode name
 const NAME_LENGTH_LIMIT: usize = 27;
 const INODE_INDIRECT1_COUNT: usize = BLOCK_SZ / 4;
 const INODE_INDIRECT2_COUNT: usize = INODE_INDIRECT1_COUNT * INODE_INDIRECT1_COUNT;
@@ -57,8 +59,8 @@ impl SuperBlock {
         self.magic == EFS_MAGIC
     }
 }
-
-#[derive(PartialEq)]
+/// Type of a disk inode
+#[derive(PartialEq, Clone)]
 pub enum DiskInodeType {
     File,
     Directory,
@@ -73,7 +75,8 @@ pub struct DiskInode {
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
-    type_: DiskInodeType,
+    pub type_: DiskInodeType,
+    pub nlink: u32, // 引用计数，实现硬链接
 }
 
 impl DiskInode {
@@ -84,6 +87,7 @@ impl DiskInode {
         self.indirect1 = 0;
         self.indirect2 = 0;
         self.type_ = type_;
+        self.nlink = 1;
     }
     pub fn is_dir(&self) -> bool {
         self.type_ == DiskInodeType::Directory
@@ -331,6 +335,9 @@ impl DiskInode {
         read_size
     }
     /// File size must be adjusted before.
+    /// Write data into current disk inode
+    /// size must be adjusted properly beforehand (用increase_size())
+    /// write_at是写数据部分的内容，不是写inode部分的内容
     pub fn write_at(
         &mut self,
         offset: usize,
@@ -371,6 +378,7 @@ impl DiskInode {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct DirEntry {
     name: [u8; NAME_LENGTH_LIMIT + 1],
     inode_id: u32,

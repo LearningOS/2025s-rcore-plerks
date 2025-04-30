@@ -65,6 +65,19 @@ impl MemorySet {
             None,
         );
     }
+    
+    /// 使用MapArea的unmap()完成功能
+    /// 如果[start_vpn, end_vpn)不能恰好对上某个MapArea，返回Err
+    pub fn munmap(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> Result<(), ()> {
+        for area in self.areas.iter_mut() {
+            if area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn {
+                area.unmap(&mut self.page_table);
+                return Ok(());
+            }
+        }
+        Err(())
+    }
+
     /// remove a area
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
         if let Some((idx, area)) = self
@@ -316,6 +329,11 @@ impl MemorySet {
         } else {
             false
         }
+    }
+
+    /// 用page_table的find_pte直接返回pte的拷贝
+    pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+        self.page_table.find_pte(vpn)
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory

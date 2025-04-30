@@ -1,5 +1,5 @@
 //!Stdin & Stdout
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::mm::UserBuffer;
 use crate::sbi::console_getchar;
 use crate::task::suspend_current_and_run_next;
@@ -39,6 +39,18 @@ impl File for Stdin {
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
     }
+
+    // 为了通过编译而有的方法，sys_fstat中会获取到实际类型为OSInode的对象，但是在那里编译器只知道类型是符合File trait的对象，
+    // 所以需要给File trait增加get_stat()函数，于是Stdin也要实现get_stat，这里返回一个无意义的Stat
+    fn get_stat(&self) -> Stat {
+        Stat {
+            dev: 0,
+            ino: 0,
+            mode: StatMode::NULL,
+            nlink: 1,
+            pad: [0; 7]
+        }
+    }
 }
 
 impl File for Stdout {
@@ -56,5 +68,17 @@ impl File for Stdout {
             print!("{}", core::str::from_utf8(*buffer).unwrap());
         }
         user_buf.len()
+    }
+    
+    // 为了通过编译而有的方法，sys_fstat中会获取到实际类型为OSInode的对象，但是在那里编译器只知道类型是符合File trait的对象，
+    // 所以需要给File trait增加get_stat()函数，于是Stdin也要实现get_stat，这里返回一个无意义的Stat
+    fn get_stat(&self) -> Stat {
+        Stat {
+            dev: 0,
+            ino: 0,
+            mode: StatMode::NULL,
+            nlink: 1,
+            pad: [0; 7]
+        }
     }
 }

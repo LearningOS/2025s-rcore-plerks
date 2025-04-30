@@ -69,6 +69,10 @@ pub struct TaskControlBlockInner {
 
     /// It is set when active exit or execution error occurs
     pub exit_code: i32,
+
+    /// Option为None表示对应下标位置的fd编号没有被分配，
+    /// 为Some表示当前进程这个fd编号有打开的文件，
+    /// 套一层Arc，应该是为了在多线程下安全地Clone File
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
     pub signals: SignalFlags,
     pub signal_mask: SignalFlags,
@@ -87,6 +91,15 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// 实现stride调度：
+    /// 进程当前stride
+    pub stride: u8,
+
+    /// 优先级，stride调度要求进程优先级>=2，初始设为16。
+    /// 由于每次选stride值最小的进程出来运行，且每次步进值pass为BigStride / P.priority。所以priority值越小，
+    /// 越容易得到执行，不过整体上所有进程都是在往前推进的
+    pub priority: u8,
 }
 
 impl TaskControlBlockInner {
@@ -158,6 +171,8 @@ impl TaskControlBlock {
                     trap_ctx_backup: None,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         };
@@ -226,7 +241,10 @@ impl TaskControlBlock {
         // **** release current PCB
     }
 
-    /// Fork from parent to child
+    /// parent process fork the child process
+    /// Rust的self可以显式指定(并改变)类型，这里Self是TaskControlBlock，但是却把self指定为了&Arc<Self>，即&Arc<TaskControlBlock>，
+    /// 调用时必须在一个Arc<TaskControlBlock>上调用，见os/src/syscall/process.rs sys_fork()
+    /// 看着挺诡异，TaskControlBlock里定义的方法，被一个别的类型调用了
     pub fn fork(self: &Arc<TaskControlBlock>) -> Arc<TaskControlBlock> {
         // ---- hold parent PCB lock
         let mut parent_inner = self.inner_exclusive_access();
@@ -273,6 +291,8 @@ impl TaskControlBlock {
                     trap_ctx_backup: None,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    priority: 16,
                 })
             },
         });
@@ -286,6 +306,76 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+
+    /// 直接fork一个新进程，exec指定的程序，而不是通过先调fork再调exec
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let mut parent_inner = self.inner_exclusive_access();
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        // copy fd table
+        let mut new_fd_table: Vec<Option<Arc<dyn File + Send + Sync>>> = Vec::new();
+        for fd in parent_inner.fd_table.iter() {
+            if let Some(file) = fd {
+                new_fd_table.push(Some(file.clone()));
+            } else {
+                new_fd_table.push(None);
+            }
+        }
+        // 构造TaskControlBlock
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    fd_table: new_fd_table,
+                    signals: SignalFlags::empty(),
+                    // inherit the signal_mask and signal_action
+                    signal_mask: parent_inner.signal_mask,
+                    handling_sig: -1,
+                    signal_actions: parent_inner.signal_actions.clone(),
+                    killed: false,
+                    frozen: false,
+                    trap_ctx_backup: None,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    stride: 0,
+                    priority: 16,
+                })
+            },
+        });
+        parent_inner.children.push(task_control_block.clone());
+        drop(parent_inner);
+
+        let inner = task_control_block.inner_exclusive_access();
+        let trap_cx = inner.get_trap_cx(); // TaskControlBlockInner的get_trap_cx()通过trap_cx_ppn找到TrapContext的引用
+        // 构造TrapContext
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+
+        drop(inner);
+        
+        task_control_block
     }
 
     /// get pid of process

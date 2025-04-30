@@ -22,6 +22,7 @@ pub use page_table::{
     translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,
     PageTableEntry, UserBuffer, UserBufferIterator,
 };
+pub use frame_allocator::FRAME_ALLOCATOR;
 
 /// initiate heap allocator, frame allocator and kernel space
 pub fn init() {

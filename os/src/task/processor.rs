@@ -13,6 +13,7 @@ use alloc::sync::Arc;
 use lazy_static::*;
 
 /// Processor management structure
+/// Processor控制执行流。current为当前在执行的任务，idle_task_cx用来维护无限loop选择用户task来执行的执行流
 pub struct Processor {
     ///The task currently executing on the current processor
     current: Option<Arc<TaskControlBlock>>,

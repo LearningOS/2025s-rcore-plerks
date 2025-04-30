@@ -1,5 +1,7 @@
 # Building
 TARGET := riscv64gc-unknown-none-elf
+# 这里用debug的话会有问题，fs.img的生成路径在其它地方写死了在release下，改成debug mode得找相应地方改
+# 把这个注释写在MODE := release行尾会有问题
 MODE := release
 KERNEL_ELF := target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := $(KERNEL_ELF).bin

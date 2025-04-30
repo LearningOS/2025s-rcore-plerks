@@ -108,18 +108,69 @@ pub fn sys_dup(fd: usize) -> isize {
 
 /// YOUR JOB: Implement fstat.
 pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
-    trace!("kernel:pid[{}] sys_fstat NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+    /* trace!(
+        "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    ); */
+    let token = current_user_token();
+    let buf = translated_byte_buffer(token, _st as *const u8, core::mem::size_of::<Stat>());
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    if _fd >= inner.fd_table.len() || inner.fd_table[_fd].is_none() {
+        return -1;
+    }
+    let stat = inner.fd_table[_fd].clone().unwrap().get_stat(); // unwrap之后File的实际类型为OSInode
+    // 将 stat 写入用户空间
+    let bytes = unsafe {
+        core::slice::from_raw_parts(&stat as *const Stat as *const u8, core::mem::size_of::<Stat>())
+    };
+
+    let mut offset = 0;
+    for seg in buf {
+        let len = seg.len();
+        seg.copy_from_slice(&bytes[offset..offset + len]);
+        offset += len;
+    }
+    
+    0
 }
+
+use crate::fs::ROOT_INODE;
 
 /// YOUR JOB: Implement linkat.
 pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
-    trace!("kernel:pid[{}] sys_linkat NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+    /* trace!(
+        "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    ); */
+    let token = current_user_token();
+    let old_name = translated_str(token, _old_name);
+    let new_name = translated_str(token, _new_name);
+    if old_name == new_name { // 链接同名文件
+        return -1;
+    }
+
+    let result = ROOT_INODE.add_dir_entry(&old_name, &new_name);
+    if result.is_err() {
+        return -1;
+    }
+
+    0
 }
 
 /// YOUR JOB: Implement unlinkat.
 pub fn sys_unlinkat(_name: *const u8) -> isize {
-    trace!("kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+    /* trace!(
+        "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    ); */
+    let token = current_user_token();
+    let name = translated_str(token, _name);
+
+    let result = ROOT_INODE.remove_dir_entry(&name);
+    if result.is_err() {
+        return -1;
+    }
+
+    0
 }

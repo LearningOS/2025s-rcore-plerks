@@ -8,9 +8,13 @@ use spin::Mutex;
 
 pub struct EasyFileSystem {
     pub block_device: Arc<dyn BlockDevice>,
-    pub inode_bitmap: Bitmap,
+    ///Inode bitmap
+    pub inode_bitmap: Bitmap, // inode_bitmap.start_block_id是开始放Bitmap的块号
+    ///Data bitmap
     pub data_bitmap: Bitmap,
-    inode_area_start_block: u32,
+
+    /// 开始放inode的块号
+    pub inode_area_start_block: u32,
     data_area_start_block: u32,
 }
 
@@ -122,11 +126,19 @@ impl EasyFileSystem {
         self.data_area_start_block + data_block_id
     }
 
+    /// Allocate a new inode
+    /// 对于inode_bitmap，每个bit位代表一个inode号。对于data_bitmap，每个bit位代表一个data block号。
     pub fn alloc_inode(&mut self) -> u32 {
         self.inode_bitmap.alloc(&self.block_device).unwrap() as u32
     }
 
     /// Return a block ID not ID in the data area.
+    /// deallocate inode，用bitmap.dealloc实现，bit为inode号
+    pub fn dealloc_inode(&mut self, bit: usize) {
+        self.inode_bitmap.dealloc(&self.block_device, bit);
+    }
+
+    /// Allocate a data block
     pub fn alloc_data(&mut self) -> u32 {
         self.data_bitmap.alloc(&self.block_device).unwrap() as u32 + self.data_area_start_block
     }

@@ -2,11 +2,10 @@
 
 use crate::{
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_ref, translated_refmut, translated_str, MapPermission, VirtAddr, VirtPageNum},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next, pid2task,
-        suspend_current_and_run_next, SignalAction, SignalFlags, MAX_SIG,
-    },
+        add_task, current_task, current_user_token, exit_current_and_run_next, pid2task, suspend_current_and_run_next, SignalAction, SignalFlags, MAX_SIG
+    }, timer::get_time_us,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 
@@ -65,7 +64,7 @@ pub fn sys_exec(path: *const u8, mut args: *const usize) -> isize {
         }
     }
     if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
-        let all_data = app_inode.read_all();
+        let all_data = app_inode.read_all(); // 把.elf文件的内容一次性全部读到内存中
         let task = current_task().unwrap();
         let argc = args_vec.len();
         task.exec(all_data.as_slice(), args_vec);
@@ -136,21 +135,120 @@ pub fn sys_kill(pid: usize, signum: i32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!("kernel:pid[{}] sys_get_time NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize { // 在用户程序ch3_sleep.rs中用到
+    /* trace!(
+        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    ); */
+    
+    let token = current_user_token();
+    let user_address = _ts;
+    // buf是TimeVal的物理地址段(由于跨页可能产生分段)，每个段是连续的
+    let buf = translated_byte_buffer(token, user_address as *const u8, core::mem::size_of::<TimeVal>());
+
+    let us = get_time_us();
+    let time = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+
+    // 把time做成u8切片
+    let bytes = unsafe {
+        // Rust这个类型转换要as两次，不能直接 &T 变成 *const u8，要两步，先 &T 变 *const T，然后 *const T 变 *const u8
+        core::slice::from_raw_parts(&time as *const TimeVal as *const u8, core::mem::size_of::<TimeVal>())
+    };
+
+    let mut offset = 0;
+    for seg in buf {
+        let len = seg.len();
+        seg.copy_from_slice(&bytes[offset..offset + len]);
+        offset += len;
+    }
+
+    0
 }
 
+use crate::mm::FRAME_ALLOCATOR;
+
 /// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!("kernel:pid[{}] sys_mmap NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+pub fn sys_mmap(_start: usize, _len: usize, _prot: usize) -> isize {
+    /* trace!(
+        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    ); */
+    
+    if _prot & !7 != 0 || _prot & 7 == 0 { // 内存页属性检查
+        return -1;
+    }
+
+    let start_va = VirtAddr::from(_start);
+    if !start_va.aligned() { // _start没按页对齐
+        return -1;
+    }
+    
+    let start_vpn = start_va.floor();
+    let end_va = VirtAddr::from(_start + _len); // 左闭右开，[_start, _start + _len)
+    let end_vpn = end_va.ceil();
+    // [start_vpn, end_vpn)为要分配的虚拟页框号，左闭右开
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+
+    // 检查[start_vpn, end_vpn)中是否存在已经被分配的页
+    for i in start_vpn.0..end_vpn.0 {
+        let pte = inner.memory_set.find_pte(VirtPageNum::from(i));
+
+        if let Some(x) = pte {
+            if x.is_valid() {
+                return -1;
+            }
+        }
+    }
+
+    // 检查物理内存是否足够
+    if FRAME_ALLOCATOR.exclusive_access().remain_page_count() < end_vpn.0 - start_vpn.0 {
+        return -1;
+    }
+
+    // 分配页面
+    let mut map_perm = MapPermission::U;
+    map_perm |= MapPermission::from_bits((_prot << 1) as u8).unwrap();
+
+    inner.memory_set.insert_framed_area(start_va, end_va, map_perm);
+
+    0
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel:pid[{}] sys_munmap NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+    /* trace!(
+        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    ); */
+    
+    let start_va = VirtAddr::from(_start);
+    let start_vpn = start_va.floor();
+    let end_va = VirtAddr::from(_start + _len); // 左闭右开，[_start, _start + _len)
+    let end_vpn = end_va.ceil();
+    
+    // [start_vpn, end_vpn)为要unmap的虚拟页框号，左闭右开
+    // <https://learningos.cn/rCore-Camp-Guide-2025S/chapter4/7exercise.html#mmap-munmap>:
+    // "在 rCore 课程实验中，正确执行的 sys_munmap 仅会对应 唯一且完整 的 mmap 区间，不考虑交叉、截断区间的情况。"
+    // 这话的意思应该是，只有给出的要munmap的区间恰在一个MapArea时才能视为正确输入，所以，要检查_start和_end是否
+    // 在页边界，以及是否刚好等于某个MapArea包含的页
+    
+    if !start_va.aligned() || !end_va.aligned() {
+        return -1;
+    }
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    let result = inner.memory_set.munmap(start_vpn, end_vpn);
+    if result.is_err() {
+        return -1;
+    }
+
+    0
 }
 
 /// change data segment size
@@ -166,14 +264,40 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!("kernel:pid[{}] sys_spawn NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+    /* trace!(
+        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    ); */
+
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let task = current_task().unwrap();
+        let all_data = app_inode.read_all();
+        let new_task = task.spawn(all_data.as_slice());
+        let new_pid = new_task.pid.0;
+        add_task(new_task);
+        new_pid as isize
+    } else { // 路径_path不对
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
-    trace!("kernel:pid[{}] sys_set_priority NOT IMPLEMENTED", current_task().unwrap().pid.0);
-    -1
+    /* trace!(
+        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    ); */
+
+    if _prio <= 1 {
+        return -1;
+    }
+
+    let task = current_task().unwrap();
+    task.inner_exclusive_access().priority = _prio as u8;
+
+    return _prio;
 }
 
 pub fn sys_sigprocmask(mask: u32) -> isize {
