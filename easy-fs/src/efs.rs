@@ -10,10 +10,12 @@ pub struct EasyFileSystem {
     ///Real device
     pub block_device: Arc<dyn BlockDevice>,
     ///Inode bitmap
-    pub inode_bitmap: Bitmap,
+    pub inode_bitmap: Bitmap, // inode_bitmap.start_block_id是开始放Bitmap的块号
     ///Data bitmap
     pub data_bitmap: Bitmap,
-    inode_area_start_block: u32,
+
+    /// 开始放inode的块号
+    pub inode_area_start_block: u32,
     data_area_start_block: u32,
 }
 
@@ -125,9 +127,16 @@ impl EasyFileSystem {
     pub fn get_data_block_id(&self, data_block_id: u32) -> u32 {
         self.data_area_start_block + data_block_id
     }
+
     /// Allocate a new inode
+    /// 对于inode_bitmap，每个bit位代表一个inode号。对于data_bitmap，每个bit位代表一个data block号。
     pub fn alloc_inode(&mut self) -> u32 {
         self.inode_bitmap.alloc(&self.block_device).unwrap() as u32
+    }
+
+    /// deallocate inode，用bitmap.dealloc实现，bit为inode号
+    pub fn dealloc_inode(&mut self, bit: usize) {
+        self.inode_bitmap.dealloc(&self.block_device, bit);
     }
 
     /// Allocate a data block
