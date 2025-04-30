@@ -40,6 +40,8 @@ impl File for Stdin {
         panic!("Cannot write to stdin!");
     }
 
+    // 为了通过编译而有的方法，sys_fstat中会获取到实际类型为OSInode的对象，但是在那里编译器只知道类型是符合File trait的对象，
+    // 所以需要给File trait增加get_stat()函数，于是Stdin也要实现get_stat，这里返回一个无意义的Stat
     fn get_stat(&self) -> Stat {
         Stat {
             dev: 0,
@@ -67,6 +69,9 @@ impl File for Stdout {
         }
         user_buf.len()
     }
+    
+    // 为了通过编译而有的方法，sys_fstat中会获取到实际类型为OSInode的对象，但是在那里编译器只知道类型是符合File trait的对象，
+    // 所以需要给File trait增加get_stat()函数，于是Stdin也要实现get_stat，这里返回一个无意义的Stat
     fn get_stat(&self) -> Stat {
         Stat {
             dev: 0,
