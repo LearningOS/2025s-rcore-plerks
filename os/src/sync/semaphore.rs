@@ -1,7 +1,7 @@
 //! Semaphore
 
 use crate::sync::UPSafeCell;
-use crate::task::{block_current_and_run_next, current_task, wakeup_task, TaskControlBlock};
+use crate::task::{block_current_and_run_next, current_process, current_task, wakeup_task, TaskControlBlock};
 use alloc::{collections::VecDeque, sync::Arc};
 
 /// semaphore structure
@@ -41,6 +41,24 @@ impl Semaphore {
         }
     }
 
+    /// 与up功能相同，带着sem_id以修改银行家表
+    pub fn up_with_sem_id(&self, sem_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        inner.count += 1;
+
+        let process = current_process();
+        let mut process_inner = process.inner_exclusive_access();
+        let tid = current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid;
+        process_inner.semaphore_banker.add_available(sem_id, 1);
+        process_inner.semaphore_banker.add_allocation(tid, sem_id, -1);
+
+        if inner.count <= 0 {
+            if let Some(task) = inner.wait_queue.pop_front() {
+                wakeup_task(task);
+            }
+        }
+    }
+
     /// down operation of semaphore
     pub fn down(&self) {
         trace!("kernel: Semaphore::down");
@@ -51,5 +69,24 @@ impl Semaphore {
             drop(inner);
             block_current_and_run_next();
         }
+    }
+
+    /// 与down功能相同，带着sem_id以修改银行家表
+    pub fn down_with_sem_id(&self, sem_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        inner.count -= 1;
+        
+        if inner.count < 0 {
+            inner.wait_queue.push_back(current_task().unwrap());
+            drop(inner);
+            block_current_and_run_next();
+        }
+
+        let process = current_process();
+        let mut process_inner = process.inner_exclusive_access();
+        let tid = current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid;
+        process_inner.semaphore_banker.add_available(sem_id, -1);
+        process_inner.semaphore_banker.add_allocation(tid, sem_id, 1);
+        process_inner.semaphore_banker.add_need(tid, sem_id, -1);
     }
 }

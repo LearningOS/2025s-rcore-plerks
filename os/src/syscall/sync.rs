@@ -41,7 +41,7 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
         Some(Arc::new(MutexBlocking::new()))
     };
     let mut process_inner = process.inner_exclusive_access();
-    if let Some(id) = process_inner
+    let mutex_id = if let Some(id) = process_inner
         .mutex_list
         .iter()
         .enumerate()
@@ -53,7 +53,11 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
     } else {
         process_inner.mutex_list.push(mutex);
         process_inner.mutex_list.len() as isize - 1
-    }
+    };
+
+    // 增加资源种类，也可以写在两类Mutex锁的new里，add_new_resouce会负责银行家表的扩容
+    process_inner.mutex_banker.add_new_resouce(mutex_id as usize, 1);
+    mutex_id
 }
 /// mutex lock syscall
 pub fn sys_mutex_lock(mutex_id: usize) -> isize {
@@ -69,11 +73,25 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
             .tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+    
+    let tid = current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid;
+    process_inner.mutex_banker.add_need(tid, mutex_id, 1); // need加1
+    if process_inner.is_enable {
+        // 安全性检查。注意安全性检查只是检查这个need会不会导致不安全，不去修改available和allocation，只是做检查。
+        // 真正mutex.lock/unlock成功时（这时真正获取/释放了资源），才去改available和allocation
+        let safe = process_inner.mutex_banker.banker_check();
+        // debug!("mutex safety check result: {}", safe);
+        if !safe {
+            process_inner.mutex_banker.add_need(tid, mutex_id, -1); // 不安全，拒绝这个need，返回-0xdead让线程退出
+            return -0xdead;
+        }
+    }
+
     drop(process_inner);
     drop(process);
-    mutex.lock();
+    mutex.lock_with_mutex_id(mutex_id); // 安全性检查放行，让其去获取资源，可能会卡住，但是系统是处于安全状态的
     0
 }
 /// mutex unlock syscall
@@ -92,9 +110,10 @@ pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+    
     drop(process_inner);
     drop(process);
-    mutex.unlock();
+    mutex.unlock_with_mutex_id(mutex_id); // unlock释放资源
     0
 }
 /// semaphore create syscall
@@ -112,7 +131,7 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
     );
     let process = current_process();
     let mut process_inner = process.inner_exclusive_access();
-    let id = if let Some(id) = process_inner
+    let sem_id = if let Some(id) = process_inner
         .semaphore_list
         .iter()
         .enumerate()
@@ -127,7 +146,11 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
             .push(Some(Arc::new(Semaphore::new(res_count))));
         process_inner.semaphore_list.len() - 1
     };
-    id as isize
+
+    // 增加资源种类，也可以写在Semaphore的new里，add_new_resouce会负责银行家表的扩容
+    process_inner.semaphore_banker.add_new_resouce(sem_id as usize, res_count);
+
+    sem_id as isize
 }
 /// semaphore up syscall
 pub fn sys_semaphore_up(sem_id: usize) -> isize {
@@ -145,8 +168,9 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
+
     drop(process_inner);
-    sem.up();
+    sem.up_with_sem_id(sem_id); // up释放资源
     0
 }
 /// semaphore down syscall
@@ -163,10 +187,28 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
             .tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
+
+    let tid = current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid;
+    process_inner.semaphore_banker.add_need(tid, sem_id, 1);
+    if process_inner.is_enable {
+        // 安全性检查
+        let safe = process_inner.semaphore_banker.banker_check();
+        debug!(" ========= ");
+        debug!("bank algorithm safety check result: {}", safe);
+        debug!("available: {:?}", process_inner.semaphore_banker.available);
+        debug!("allocation: {:?}", process_inner.semaphore_banker.allocation);
+        debug!("need: {:?}", process_inner.semaphore_banker.need);
+        debug!(" ========= ");
+        if !safe {
+            process_inner.semaphore_banker.add_need(tid, sem_id, -1); // 不安全，拒绝接收这个need
+            return -0xdead;
+        }
+    }
+
     drop(process_inner);
-    sem.down();
+    sem.down_with_sem_id(sem_id); // 安全性检查放行，让其去获取资源，可能会卡住，但是系统是处于安全状态的
     0
 }
 /// condvar create syscall
@@ -247,5 +289,8 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
 pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
     trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+    let process = current_process();
+    let mut process_inner = process.inner_exclusive_access();
+    process_inner.is_enable = true;
+    0
 }

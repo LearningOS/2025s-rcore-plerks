@@ -14,6 +14,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use super::banker::Banker;
 
 /// Process Control Block
 pub struct ProcessControlBlock {
@@ -49,6 +50,16 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    /// 内核是否为用户进程开启死锁避免的检测
+    pub is_enable: bool,
+
+    /// 指导书允许把mutex的检测和semaphore的检测分开做，不考虑两者混合的情况，
+    /// (主要mutex有自己标号，semaphore有自己标号，两者都会增长，本身把两者都看成一种资源即可，
+    /// 但是二者整合起来给一个线性的标号有点麻烦)
+    
+    pub mutex_banker: Banker,
+    pub semaphore_banker: Banker,
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +130,9 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    is_enable: false,
+                    mutex_banker: Banker::new(),
+                    semaphore_banker: Banker::new(),
                 })
             },
         });
@@ -245,6 +259,9 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    is_enable: false,
+                    mutex_banker: Banker::new(),
+                    semaphore_banker: Banker::new(),
                 })
             },
         });
