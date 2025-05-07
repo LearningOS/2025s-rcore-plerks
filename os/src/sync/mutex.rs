@@ -167,8 +167,9 @@ impl Mutex for MutexBlocking {
         let mut mutex_inner = self.inner.exclusive_access();
         assert!(mutex_inner.locked);
         if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
-            // 如果等待队列中有线程，把他从mutex的等待队列中移到read_queue（在mutex的等待队列中时不会被调度运行），
-            // 而且没有修改mutex_inner.locked，还是锁住的状态相当于锁直接从当前线程转移到了被唤醒的线程
+            // 如果等待队列中有线程，把他从mutex的等待队列中移到read_queue（在mutex的等待队列中时不会被调度运行，
+            // 因为block_current_and_run_next()会把当前线程从调度队列ready_queue中移出，放入mutex的阻塞队列中）
+            // 而且没有修改mutex_inner.locked，保持为锁住的状态，相当于锁直接从当前线程转移到了被唤醒的线程
             wakeup_task(waking_task);
         } else {
             mutex_inner.locked = false;
@@ -185,10 +186,11 @@ impl Mutex for MutexBlocking {
         let mut process_inner = process.inner_exclusive_access();
         let tid = current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid;
         if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
-            // 如果等待队列中有线程，把他从mutex的等待队列中移到read_queue（在mutex的等待队列中时不会被调度运行），
-            // 而且没有修改mutex_inner.locked，还是锁住的状态相当于锁直接从当前线程转移到了被唤醒的线程
+            // 如果等待队列中有线程，把他从mutex的等待队列中移到read_queue（在mutex的等待队列中时不会被调度运行，
+            // 因为block_current_and_run_next()会把当前线程从调度队列ready_queue中移出，放入mutex的阻塞队列中）
+            // 而且没有修改mutex_inner.locked，保持为锁住的状态，相当于锁直接从当前线程转移到了被唤醒的线程
             // 所以available不变，allocation减1。
-            // 也可以这里 available + 1，上面lock_with_mutex_id从阻塞中唤醒时 available - 1，最终效果一样
+            // 也可以这里 available + 1，上面lock_with_mutex_id() block_current_and_run_next()结束从阻塞中唤醒并获得锁时加上 available - 1，最终效果一样
             process_inner.mutex_banker.add_allocation(tid, mutex_id, -1);
             wakeup_task(waking_task);
         } else {
