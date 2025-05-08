@@ -78,7 +78,10 @@ jobs:
           post_api: ${{ secrets.RCORE_2025_SPRING_POST_API }}
           token: ${{ secrets.RCORE_2025_SPRING_TOKEN }}
         run: |
-          score=$(( $(grep -o 'ch' classroom/latest.json | wc -l) * 100))
+          # 修改score的统计逻辑, 让它忽略ch7, 不然我ch7上有commit, 会把ch7也算分, 最后会有600分
+          # score=$(( $(grep -o 'ch' classroom/latest.json | wc -l) * 100))
+          score=$(( $(grep -Po 'ch(?!7)' classroom/latest.json | wc -l) * 100 ))
+          score=$(( score < 500 ? score : 500 ))
           cat classroom/latest.json
           echo $score
 
