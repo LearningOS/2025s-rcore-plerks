@@ -24,7 +24,16 @@ impl TaskManager {
     /// Add process back to ready queue
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
         let mut inner = task.as_ref().inner_exclusive_access();
-        inner.stride += BIG_STRIDE / inner.priority;
+
+        /* 写inner.stride += BIG_STRIDE / inner.priority;的话，
+        rust在debug模式下发生运算溢出会去调panic_handler，然后panic_handler (os/src/lang_items.rs)会直接调shutdown()退出qemu。
+        (os/Makefile里MODE := debug，然后make run，shell运行ch5b_forktree，会panic退出)
+        (release模式下发生溢出，rust不会管，所以不改成用wrapping_add()也行)
+        make test应该是用的release模式，所以不需要改成wrapping_add()也能过
+        */
+
+        // inner.stride += BIG_STRIDE / inner.priority;
+        inner.stride = inner.stride.wrapping_add(BIG_STRIDE / inner.priority);
         drop(inner);
         self.ready_queue.push_back(task);
     }
