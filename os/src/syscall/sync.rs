@@ -89,9 +89,23 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
         }
     }
 
+    /* 可以用增加的lock_with_mutex_id()实现lock()，lock_with_mutex_id()里会修改银行家表，更简单的方式是在mutex.lock()返回后
+       就可以修改银行家表了。 */
+
+    // 写法一:
+    // mutex.lock_with_mutex_id(mutex_id); // 安全性检查放行，让其去获取资源，可能会卡住，但是系统是处于安全状态的
+
+    // 写法二:
+    /* lock()前先drop(process_inner)，因为lock()可能会卡住当前线程，这时父函数sys_mutex_lock()这帧还在，process_inner没被drop掉，
+       但是其它线程要调sys_mutex_lock()获取process_inner，于是process_inner会被双重借用，发生panic */
     drop(process_inner);
-    drop(process);
-    mutex.lock_with_mutex_id(mutex_id); // 安全性检查放行，让其去获取资源，可能会卡住，但是系统是处于安全状态的
+    mutex.lock(); // lock()成功返回后改银行家表，不需要去定义并使用lock_with_mutex_id()
+    let mut process_inner = process.inner_exclusive_access();
+    process_inner.mutex_banker.add_available(mutex_id, -1);
+    process_inner.mutex_banker.add_allocation(tid, mutex_id, 1);
+    process_inner.mutex_banker.add_need(tid, mutex_id, -1);
+
+    // drop(process_inner);
     0
 }
 /// mutex unlock syscall
@@ -108,12 +122,20 @@ pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
             .tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+    let tid = current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid;
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
-    
+
+    // 写法一:
+    // mutex.unlock_with_mutex_id(mutex_id); // unlock释放资源
+
+    // 写法二:
+    mutex.unlock(); // unlock()返回后改银行家表，不需要去定义并使用unlock_with_mutex_id()
+    process_inner.mutex_banker.add_available(mutex_id, 1);
+    process_inner.mutex_banker.add_allocation(tid, mutex_id, -1);
+
     drop(process_inner);
     drop(process);
-    mutex.unlock_with_mutex_id(mutex_id); // unlock释放资源
     0
 }
 /// semaphore create syscall
@@ -166,11 +188,19 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
             .tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+    let tid = current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid;
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
 
+    // 写法一:
+    // sem.up_with_sem_id(sem_id); // up释放资源
+
+    // 写法二:
+    sem.up(); // up()返回后改银行家表，不需要去定义并使用up_with_sem_id()
+    process_inner.semaphore_banker.add_available(sem_id, 1);
+    process_inner.semaphore_banker.add_allocation(tid, sem_id, -1);
+
     drop(process_inner);
-    sem.up_with_sem_id(sem_id); // up释放资源
     0
 }
 /// semaphore down syscall
@@ -207,8 +237,23 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
         }
     }
 
+    /* 可以用增加的down_with_sem_id()实现down()，down_with_sem_id()里会修改银行家表，更简单的方式是在sem.down()返回后
+       就可以修改银行家表了。 */
+
+    // 写法一:
+    // sem.down_with_sem_id(sem_id); // 安全性检查放行，让其去获取资源，可能会卡住，但是系统是处于安全状态的
+
+    // 写法二:
+    /* down()前先drop(process_inner)，因为down()可能会卡住当前线程，这时父函数sys_semaphore_down()这帧还在，process_inner没被drop掉，
+       但是其它线程要调sys_semaphore_down()获取process_inner，于是process_inner会被双重借用，发生panic */
     drop(process_inner);
-    sem.down_with_sem_id(sem_id); // 安全性检查放行，让其去获取资源，可能会卡住，但是系统是处于安全状态的
+    sem.down();
+    let mut process_inner = process.inner_exclusive_access();
+    process_inner.semaphore_banker.add_available(sem_id, -1);
+    process_inner.semaphore_banker.add_allocation(tid, sem_id, 1);
+    process_inner.semaphore_banker.add_need(tid, sem_id, -1);
+
+    drop(process_inner);
     0
 }
 /// condvar create syscall
