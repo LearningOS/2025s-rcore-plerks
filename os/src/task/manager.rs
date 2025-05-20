@@ -24,7 +24,7 @@ impl TaskManager {
     /// Add process back to ready queue
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
         let mut inner = task.as_ref().inner_exclusive_access();
-        inner.stride += BIG_STRIDE / inner.priority;
+        inner.stride = inner.stride.wrapping_add(BIG_STRIDE / inner.priority);
         drop(inner);
         self.ready_queue.push_back(task);
     }
@@ -66,8 +66,8 @@ impl TaskManager {
         // 不用优先队列，直接暴力遍历，[rcore-camp-guide](https://learningos.cn/rCore-Camp-Guide-2025S/chapter5/4exercise.html):
         // stride 算法要找到 stride 最小的进程，使用优先级队列是效率不错的办法，但是我们的实验测例很简单，所以效率完全不是问题。事实上，很推荐使用暴力扫一遍的办法找最小值。
         for i in 1..self.ready_queue.len() {
-            let stride = self.ready_queue[0].as_ref().inner_exclusive_access().stride;
-            if ((stride - min_stride) as i8) < 0 { // 判断(signed)(a - b) 的正负
+            let stride = self.ready_queue[i].as_ref().inner_exclusive_access().stride;
+            if ((stride.wrapping_sub(min_stride)) as i8) < 0 { // 判断(signed)(a - b) 的正负
                 index = i;
                 min_stride = stride;
             }
