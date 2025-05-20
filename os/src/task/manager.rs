@@ -75,8 +75,9 @@ impl TaskManager {
         // 不用优先队列，直接暴力遍历，[rcore-camp-guide](https://learningos.cn/rCore-Camp-Guide-2025S/chapter5/4exercise.html):
         // stride 算法要找到 stride 最小的进程，使用优先级队列是效率不错的办法，但是我们的实验测例很简单，所以效率完全不是问题。事实上，很推荐使用暴力扫一遍的办法找最小值。
         for i in 1..self.ready_queue.len() {
-            let stride = self.ready_queue[0].as_ref().inner_exclusive_access().stride;
-            if ((stride - min_stride) as i8) < 0 { // 判断(signed)(a - b) 的正负
+            let stride = self.ready_queue[i].as_ref().inner_exclusive_access().stride;
+            // 判断(signed)(a - b) 的正负。rust debug模式下会检查溢出，溢出会panic所以要用wrapping_sub。release模式不会检查溢出。
+            if ((stride.wrapping_sub(min_stride)) as i8) < 0 {
                 index = i;
                 min_stride = stride;
             }
