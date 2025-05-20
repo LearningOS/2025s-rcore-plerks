@@ -336,6 +336,6 @@ pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
     trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
     let process = current_process();
     let mut process_inner = process.inner_exclusive_access();
-    process_inner.is_enable = true;
+    process_inner.is_enable = _enabled == 1; // 参数_enabled: 为 1 表示启用死锁检测， 0 表示禁用死锁检测
     0
 }
